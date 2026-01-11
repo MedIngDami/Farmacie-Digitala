@@ -1,14 +1,14 @@
 """
-PHARMACY MANAGEMENT SYSTEM - Web Interface COMPLET
-Cu toate funcționalitățile, adaptat pentru structura ta de baze de date
+PHARMACY MANAGEMENT SYSTEM - Web Interface COMPLET (SQLite)
+Păstrează STRICT schema ta medicines_info:
+Med_code, Med_name, Qty, MRP, Mfg, Exp, Purpose
 """
 
 import streamlit as st
-import mysql.connector
+from db_sqlite import init_db, query_df, exec_sql
 import pandas as pd
 from datetime import datetime, timedelta
 import plotly.express as px
-import plotly.graph_objects as go
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -16,291 +16,37 @@ warnings.filterwarnings('ignore')
 
 # ====================== CONFIGURARE ======================
 class Config:
-    DB_CONFIG = {
-        "host": "localhost",
-        "user": "root",
-        "password": "",
-        "database": "pharmacy"
-    }
-
     ROLES = ["admin", "pharmacist", "manager", "cashier"]
 
-    @staticmethod
-    def get_connection():
-        """Returnează o conexiune la baza de date"""
-        try:
-            conn = mysql.connector.connect(**Config.DB_CONFIG)
-            return conn
-        except mysql.connector.Error as err:
-            st.error(f"❌ Database connection error: {err}")
-            return None
-
-    @staticmethod
-    def init_database():
-        """Inițializează baza de date CU ADAPTARE pentru structura existentă"""
-        try:
-            conn = mysql.connector.connect(
-                host=Config.DB_CONFIG["host"],
-                user=Config.DB_CONFIG["user"],
-                password=Config.DB_CONFIG["password"]
-            )
-            cursor = conn.cursor()
-
-            # Creează baza de date dacă nu există
-            cursor.execute(f"CREATE DATABASE IF NOT EXISTS {Config.DB_CONFIG['database']}")
-            cursor.execute(f"USE {Config.DB_CONFIG['database']}")
-
-            # === TABELA MEDICINES_INFO - CREARE SAU ADAPTARE ===
-            # Verifică dacă tabela există
-            cursor.execute("SHOW TABLES LIKE 'medicines_info'")
-            if cursor.fetchone():
-                # Tabela există - verifică coloanele
-                cursor.execute("DESCRIBE medicines_info")
-                existing_columns = [row[0] for row in cursor.fetchall()]
-
-                # Lista coloanelor necesare pentru aplicație
-                needed_columns = {
-                    'Med_code': 'VARCHAR(20) PRIMARY KEY',
-                    'Med_name': 'VARCHAR(100) NOT NULL',
-                    'Qty': 'INT NOT NULL DEFAULT 0',
-                    'MRP': 'DECIMAL(10,2) NOT NULL',
-                    'Cost': 'DECIMAL(10,2)',
-                    'Category': 'VARCHAR(50)',
-                    'Mfg': 'DATE',
-                    'Exp': 'DATE',
-                    'Purpose': 'TEXT',
-                    'Supplier': 'VARCHAR(100)',
-                    'Reorder_level': 'INT DEFAULT 20',
-                    'Created_at': 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP'
-                }
-
-                # Adaugă coloanele lipsă
-                for col_name, col_type in needed_columns.items():
-                    if col_name not in existing_columns:
-                        try:
-                            if col_name == 'Med_code' and 'Med_code' in existing_columns:
-                                continue  # Skip primary key dacă există deja
-                            cursor.execute(f"ALTER TABLE medicines_info ADD COLUMN {col_name} {col_type}")
-                            print(f"✓ Adăugată coloana: {col_name}")
-                        except Exception as e:
-                            print(f"⚠ Nu s-a putut adăuga coloana {col_name}: {e}")
-            else:
-                # Tabela nu există - creează-o completă
-                cursor.execute("""
-                    CREATE TABLE medicines_info (
-                        Med_code VARCHAR(20) PRIMARY KEY,
-                        Med_name VARCHAR(100) NOT NULL,
-                        Qty INT NOT NULL DEFAULT 0,
-                        MRP DECIMAL(10,2) NOT NULL,
-                        Cost DECIMAL(10,2),
-                        Category VARCHAR(50),
-                        Mfg DATE,
-                        Exp DATE,
-                        Purpose TEXT,
-                        Supplier VARCHAR(100),
-                        Reorder_level INT DEFAULT 20,
-                        Created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-                print("✓ Tabela medicines_info creată cu toate coloanele")
-
-            # === TABELA USERS ===
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    username VARCHAR(50) UNIQUE NOT NULL,
-                    password VARCHAR(255) NOT NULL,
-                    role ENUM('admin', 'pharmacist', 'manager', 'cashier') NOT NULL,
-                    full_name VARCHAR(100),
-                    email VARCHAR(100),
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-
-            # === TABELA SALES ===
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS sales (
-                    sale_id INT AUTO_INCREMENT PRIMARY KEY,
-                    medicine_code VARCHAR(20),
-                    quantity INT,
-                    sale_price DECIMAL(10,2),
-                    total DECIMAL(10,2),
-                    sale_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    cashier_id INT
-                )
-            """)
-
-            # Adaugă utilizatori demo dacă nu există
-            cursor.execute("SELECT COUNT(*) FROM users")
-            if cursor.fetchone()[0] == 0:
-                default_users = [
-                    ("admin", "admin123", "admin", "Administrator", "admin@pharmacy.com"),
-                    ("pharmacist", "pharma123", "pharmacist", "John Pharmacist", "pharma@pharmacy.com"),
-                    ("cashier", "cash123", "cashier", "Alice Cashier", "cashier@pharmacy.com"),
-                    ("manager", "manager123", "manager", "Bob Manager", "manager@pharmacy.com")
-                ]
-
-                for user in default_users:
-                    try:
-                        cursor.execute(
-                            "INSERT INTO users (username, password, role, full_name, email) VALUES (%s, %s, %s, %s, %s)",
-                            user
-                        )
-                    except:
-                        pass  # User poate exista deja
-
-            conn.commit()
-            cursor.close()
-            conn.close()
-            print("✅ Database initialized successfully!")
-            return True
-
-        except Exception as e:
-            print(f"❌ Database initialization error: {e}")
-            return False
-
-    @staticmethod
-    def check_column_exists(table, column):
-        """Verifică dacă o coloană există într-un tabel"""
-        try:
-            conn = Config.get_connection()
-            cursor = conn.cursor()
-            cursor.execute(f"SHOW COLUMNS FROM {table} LIKE '{column}'")
-            exists = cursor.fetchone() is not None
-            cursor.close()
-            conn.close()
-            return exists
-        except:
-            return False
+    # IMPORTANT: deoarece nu vrem să stricăm medicines_info,
+    # folosim un prag fix pentru low-stock
+    LOW_STOCK_THRESHOLD = 20
 
 
-# ====================== FUNCȚII UTILITARE ADAPTATE ======================
+# ====================== FUNCȚII UTILITARE (SQLite) ======================
 class DatabaseHelper:
     @staticmethod
-    def execute_query(query, params=None, fetch=True):
-        """Execută o interogare SQL și returnează rezultatele"""
-        conn = Config.get_connection()
-        if not conn:
-            return None
-
-        try:
-            cursor = conn.cursor()
-            cursor.execute(query, params or ())
-
-            if fetch:
-                if query.strip().upper().startswith('SELECT'):
-                    result = cursor.fetchall()
-                    columns = [desc[0] for desc in cursor.description]
-                    return result, columns
-                else:
-                    conn.commit()
-                    return cursor.rowcount
-
-            conn.commit()
-            return None
-
-        except Exception as e:
-            st.error(f"❌ Query error: {e}")
-            return None
-        finally:
-            if 'cursor' in locals():
-                cursor.close()
-            conn.close()
-
-    @staticmethod
     def get_dataframe(query, params=None):
-        """Returnează un DataFrame pandas din interogare"""
-        conn = Config.get_connection()
-        if not conn:
-            return pd.DataFrame()
-
         try:
-            df = pd.read_sql_query(query, conn, params=params)
-            return df
+            return query_df(query, params or [])
         except Exception as e:
             st.error(f"❌ DataFrame error: {e}")
             return pd.DataFrame()
-        finally:
-            conn.close()
 
     @staticmethod
-    def get_safe_dataframe(query, params=None, default_columns=None):
-        """Versiune safe pentru DataFrame care evită erorile de coloane lipsă"""
+    def execute(query, params=None):
         try:
-            return DatabaseHelper.get_dataframe(query, params)
-        except:
-            # Dacă query-ul eșuează din cauza coloanelor lipsă, încercă o variantă mai simplă
-            if default_columns:
-                # Construiește un query simplificat
-                simple_query = query
-                # Înlocuiește SELECT * cu SELECT coloane_simple
-                if "SELECT *" in query.upper():
-                    simple_query = query.replace("SELECT *", f"SELECT {', '.join(default_columns)}")
-                try:
-                    return DatabaseHelper.get_dataframe(simple_query, params)
-                except:
-                    return pd.DataFrame()
-            return pd.DataFrame()
+            return exec_sql(query, params or [])
+        except Exception as e:
+            st.error(f"❌ Query error: {e}")
+            return 0
 
 
-# ====================== FUNCȚII SPECIALE ADAPTATE ======================
-def get_column_safe(table, column, default_value=None):
-    """Returnează o coloană safe (folosește valoarea implicită dacă coloana nu există)"""
-    if Config.check_column_exists(table, column):
-        return column
-    elif default_value is not None:
-        return f"'{default_value}' as {column}"
-    else:
-        return "NULL"
-
-
-def build_safe_query(base_query, table='medicines_info'):
-    """Construiește un query safe care evită coloanele lipsă"""
-    # Coloane și valorile lor implicite
-    column_defaults = {
-        'Category': '',
-        'Supplier': '',
-        'Reorder_level': 20,
-        'Cost': 0,
-        'Created_at': 'CURRENT_TIMESTAMP'
-    }
-
-    # Pentru SELECT *, înlocuiește cu coloane specifice
-    if "SELECT *" in base_query.upper():
-        # Obține coloanele reale din tabel
-        try:
-            conn = Config.get_connection()
-            cursor = conn.cursor()
-            cursor.execute(f"DESCRIBE {table}")
-            real_columns = [row[0] for row in cursor.fetchall()]
-            cursor.close()
-            conn.close()
-
-            # Construiește SELECT-ul cu coloanele reale
-            select_columns = []
-            for col in real_columns:
-                select_columns.append(col)
-
-            # Adaugă coloanele lipsă cu valori implicite
-            for col, default in column_defaults.items():
-                if col not in real_columns:
-                    select_columns.append(f"'{default}' as {col}")
-
-            safe_query = base_query.replace("SELECT *", f"SELECT {', '.join(select_columns)}")
-            return safe_query
-        except:
-            # Dacă nu putem obține coloanele, folosim o listă de bază
-            base_columns = ['Med_code', 'Med_name', 'Qty', 'MRP', 'Mfg', 'Exp', 'Purpose']
-            all_columns = base_columns + [f"'{default}' as {col}" for col, default in column_defaults.items()]
-            safe_query = base_query.replace("SELECT *", f"SELECT {', '.join(all_columns)}")
-            return safe_query
-
-    return base_query
-
-
-# ====================== INTERFAȚĂ PRINCIPALĂ (NEMODIFICATĂ) ======================
+# ====================== INTERFAȚĂ PRINCIPALĂ ======================
 def main():
-    # Configurare pagină
+    # Inițializează SQLite + tabele
+    init_db()
+
     st.set_page_config(
         page_title="Pharmacy Management System",
         page_icon="💊",
@@ -351,50 +97,38 @@ def main():
     </style>
     """, unsafe_allow_html=True)
 
-    # Inițializează baza de date (doar prima dată)
-    if 'db_initialized' not in st.session_state:
-        with st.spinner("Initializing database..."):
-            success = Config.init_database()
-            if success:
-                st.session_state.db_initialized = True
-                st.success("✅ Database initialized successfully!")
-            else:
-                st.warning("⚠️ Database initialization completed with some warnings. The app will adapt.")
-
-    # Sidebar - Autentificare
+    # ====================== SIDEBAR LOGIN ======================
     with st.sidebar:
         st.markdown("## 🔐 Authentication")
 
-        # Login form
         username = st.text_input("Username", key="login_username")
         password = st.text_input("Password", type="password", key="login_password")
         role = st.selectbox("Role", Config.ROLES, key="login_role")
 
         col1, col2 = st.columns(2)
+
         with col1:
             if st.button("🚪 Login", use_container_width=True):
-                # Verifică credențialele
                 query = """
-                    SELECT id, full_name, role 
-                    FROM users 
-                    WHERE username = %s AND password = %s AND role = %s
+                    SELECT id, full_name, role
+                    FROM users
+                    WHERE username = ? AND password = ? AND role = ?
+                    LIMIT 1
                 """
-                result = DatabaseHelper.execute_query(query, (username, password, role))
+                dfu = DatabaseHelper.get_dataframe(query, [username, password, role])
 
-                if result and result[0]:
-                    user_data = result[0][0]
+                if not dfu.empty:
                     st.session_state.logged_in = True
-                    st.session_state.user_id = user_data[0]
-                    st.session_state.user_name = user_data[1]
-                    st.session_state.user_role = user_data[2]
-                    st.success(f"✅ Welcome, {user_data[1]}!")
+                    st.session_state.user_id = int(dfu.iloc[0]["id"])
+                    st.session_state.user_name = dfu.iloc[0]["full_name"]
+                    st.session_state.user_role = dfu.iloc[0]["role"]
+                    st.success(f"✅ Welcome, {st.session_state.user_name}!")
                     st.rerun()
                 else:
                     st.error("❌ Invalid credentials!")
 
         with col2:
             if st.button("🚪 Demo Login", use_container_width=True):
-                # Auto-login pentru demo
                 st.session_state.logged_in = True
                 st.session_state.user_id = 1
                 st.session_state.user_name = "Administrator"
@@ -403,8 +137,6 @@ def main():
                 st.rerun()
 
         st.markdown("---")
-
-        # Demo credentials
         st.markdown("### 👥 Demo Credentials")
         st.markdown("""
         - **Admin**: admin / admin123
@@ -413,9 +145,8 @@ def main():
         - **Manager**: manager / manager123
         """)
 
-    # Verifică autentificarea
-    if not st.session_state.get('logged_in'):
-        # Pagina de welcome pentru userii nelogati
+    # ====================== WELCOME PAGE (not logged in) ======================
+    if not st.session_state.get("logged_in"):
         st.markdown('<h1 class="main-header">💊 Pharmacy Management System</h1>', unsafe_allow_html=True)
 
         col1, col2, col3 = st.columns([1, 2, 1])
@@ -431,7 +162,6 @@ def main():
         <li>💰 <b>Sales Processing</b> - Process sales with automatic stock update</li>
         <li>📊 <b>Automated Reports</b> - Daily, monthly and inventory reports</li>
         <li>🚨 <b>Smart Notifications</b> - Expiry and low stock alerts</li>
-        <li>🤝 <b>Supplier Integration</b> - API integration for automatic ordering</li>
         </ul>
         </div>
         """, unsafe_allow_html=True)
@@ -439,81 +169,66 @@ def main():
         st.info("👈 **Please login from the sidebar to access the system**")
         return
 
-    # Logout button
+    # ====================== LOGOUT ======================
     if st.sidebar.button("🚪 Logout"):
         for key in list(st.session_state.keys()):
             del st.session_state[key]
         st.rerun()
 
-    # Meniu principal pentru useri logati
     st.sidebar.markdown(f"### 👤 Welcome, {st.session_state.user_name}")
     st.sidebar.markdown(f"**Role:** {st.session_state.user_role.title()}")
-
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 📌 Navigation")
 
-    # Meniu în funcție de rol
-    if st.session_state.user_role == 'admin':
-        menu_options = ["📊 Dashboard", "📦 Medicines", "💰 Sales", "📈 Reports",
-                        "🚨 Alerts", "👥 Users", "⚙️ Settings"]
-    elif st.session_state.user_role == 'pharmacist':
+    # meniu per rol
+    if st.session_state.user_role == "admin":
+        menu_options = ["📊 Dashboard", "📦 Medicines", "💰 Sales", "📈 Reports", "🚨 Alerts", "👥 Users"]
+    elif st.session_state.user_role == "pharmacist":
         menu_options = ["📊 Dashboard", "📦 Medicines", "🔍 Search", "🚨 Alerts"]
-    elif st.session_state.user_role == 'cashier':
+    elif st.session_state.user_role == "cashier":
         menu_options = ["📊 Dashboard", "💰 Sales", "🔍 Search"]
     else:  # manager
         menu_options = ["📊 Dashboard", "📈 Reports", "💰 Finance", "🚨 Alerts"]
 
     selected_menu = st.sidebar.selectbox("Go to", menu_options)
 
-    # Header principal
-    st.markdown(f'<h1 class="main-header">💊 Pharmacy Management System</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">💊 Pharmacy Management System</h1>', unsafe_allow_html=True)
     st.markdown(f'<h3 class="sub-header">{selected_menu}</h3>', unsafe_allow_html=True)
 
-    # ====================== DASHBOARD ======================
+    # ====================== ROUTING ======================
     if "Dashboard" in selected_menu:
         display_dashboard()
 
-    # ====================== MEDICINES ======================
     elif "Medicines" in selected_menu:
         display_medicines()
 
-    # ====================== SALES ======================
     elif "Sales" in selected_menu:
         display_sales()
 
-    # ====================== REPORTS ======================
     elif "Reports" in selected_menu:
-        display_reports()
+        display_reports(finance=("Finance" in selected_menu))
 
-    # ====================== ALERTS ======================
     elif "Alerts" in selected_menu:
         display_alerts()
 
-    # ====================== USERS ======================
     elif "Users" in selected_menu:
-        if st.session_state.user_role in ['admin', 'manager']:
+        if st.session_state.user_role in ["admin", "manager"]:
             display_users()
         else:
             st.warning("⛔ You don't have permission to access this section")
 
-    # ====================== SETTINGS ======================
-    elif "Settings" in selected_menu:
-        display_settings()
+    elif "Search" in selected_menu:
+        display_search_only()
 
 
-# ====================== FUNCȚII PENTRU FIECARE SECȚIUNE (ADAPTATE) ======================
+# ====================== SECTIUNI ======================
 
 def display_dashboard():
-    """Afișează dashboard-ul principal - ADAPTAT"""
-
-    # Row 1: Metrics
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        # Total medicines - QUERY SAFE
-        query = "SELECT COUNT(*) FROM medicines_info"
-        result = DatabaseHelper.execute_query(query)
-        total_meds = result[0][0][0] if result else 0
+        df = DatabaseHelper.get_dataframe("SELECT COUNT(*) AS c FROM medicines_info")
+        total_meds = int(df.iloc[0]["c"]) if not df.empty else 0
         st.markdown(f"""
         <div class="metric-card">
         <h3>📦</h3>
@@ -523,33 +238,24 @@ def display_dashboard():
         """, unsafe_allow_html=True)
 
     with col2:
-        # Low stock count - ADAPTAT pentru Reorder_level
-        try:
-            # Verifică dacă coloana există
-            if Config.check_column_exists('medicines_info', 'Reorder_level'):
-                query = "SELECT COUNT(*) FROM medicines_info WHERE Qty <= Reorder_level"
-            else:
-                query = "SELECT COUNT(*) FROM medicines_info WHERE Qty <= 20"
-
-            result = DatabaseHelper.execute_query(query)
-            low_stock = result[0][0][0] if result else 0
-        except:
-            low_stock = 0
-
+        df = DatabaseHelper.get_dataframe(
+            "SELECT COUNT(*) AS c FROM medicines_info WHERE Qty <= ?",
+            [Config.LOW_STOCK_THRESHOLD]
+        )
+        low_stock = int(df.iloc[0]["c"]) if not df.empty else 0
         st.markdown(f"""
         <div class="metric-card">
         <h3>⚠️</h3>
         <h2>{low_stock}</h2>
-        <p>Low Stock Items</p>
+        <p>Low Stock Items (≤ {Config.LOW_STOCK_THRESHOLD})</p>
         </div>
         """, unsafe_allow_html=True)
 
     with col3:
-        # Today's sales
-        today = datetime.now().strftime('%Y-%m-%d')
-        query = "SELECT SUM(total) FROM sales WHERE DATE(sale_date) = %s"
-        result = DatabaseHelper.execute_query(query, (today,))
-        today_sales = float(result[0][0][0]) if result and result[0][0][0] else 0
+        df = DatabaseHelper.get_dataframe(
+            "SELECT COALESCE(SUM(total),0) AS s FROM sales WHERE date(sale_date)=date('now')"
+        )
+        today_sales = float(df.iloc[0]["s"]) if not df.empty else 0.0
         st.markdown(f"""
         <div class="metric-card">
         <h3>💰</h3>
@@ -559,126 +265,87 @@ def display_dashboard():
         """, unsafe_allow_html=True)
 
     with col4:
-        # Expiring soon
-        thirty_days = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
-        query = "SELECT COUNT(*) FROM medicines_info WHERE Exp BETWEEN CURDATE() AND %s"
-        result = DatabaseHelper.execute_query(query, (thirty_days,))
-        expiring = result[0][0][0] if result else 0
+        df = DatabaseHelper.get_dataframe(
+            """
+            SELECT COUNT(*) AS c
+            FROM medicines_info
+            WHERE Exp IS NOT NULL AND Exp != ''
+              AND date(Exp) BETWEEN date('now') AND date('now','+30 day')
+            """
+        )
+        expiring = int(df.iloc[0]["c"]) if not df.empty else 0
         st.markdown(f"""
         <div class="metric-card">
         <h3>📅</h3>
         <h2>{expiring}</h2>
-        <p>Expiring Soon</p>
+        <p>Expiring Soon (30 days)</p>
         </div>
         """, unsafe_allow_html=True)
 
     st.markdown("---")
 
-    # Row 2: Charts - ADAPTATE
     col1, col2 = st.columns(2)
 
     with col1:
-        st.subheader("📊 Stock by Category")
-        # Query safe pentru Category
-        if Config.check_column_exists('medicines_info', 'Category'):
-            query = """
-                SELECT Category, COUNT(*) as count 
-                FROM medicines_info 
-                WHERE Category IS NOT NULL AND Category != ''
-                GROUP BY Category
-            """
-        else:
-            # Dacă Category nu există, grupăm după Purpose
-            query = """
-                SELECT Purpose as Category, COUNT(*) as count 
-                FROM medicines_info 
-                WHERE Purpose IS NOT NULL AND Purpose != ''
-                GROUP BY Purpose
-            """
-
-        df = DatabaseHelper.get_dataframe(query)
-
-        if not df.empty and len(df) > 0:
-            fig = px.pie(df, values='count', names='Category',
-                         color_discrete_sequence=px.colors.sequential.RdBu)
+        st.subheader("📊 Stock Overview")
+        df = DatabaseHelper.get_dataframe("""
+            SELECT
+                CASE
+                    WHEN Purpose IS NULL OR Purpose='' THEN 'Unspecified'
+                    ELSE Purpose
+                END AS GroupKey,
+                COUNT(*) AS count
+            FROM medicines_info
+            GROUP BY GroupKey
+            ORDER BY count DESC
+            LIMIT 10
+        """)
+        if not df.empty:
+            fig = px.pie(df, values="count", names="GroupKey")
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("No category data available")
+            st.info("No data available")
 
     with col2:
         st.subheader("📈 Sales Trend (Last 7 Days)")
-        query = """
-            SELECT DATE(sale_date) as date, SUM(total) as sales
-            FROM sales 
-            WHERE sale_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
-            GROUP BY DATE(sale_date)
+        df = DatabaseHelper.get_dataframe("""
+            SELECT date(sale_date) AS date, SUM(total) AS sales
+            FROM sales
+            WHERE date(sale_date) >= date('now','-7 day')
+            GROUP BY date(sale_date)
             ORDER BY date
-        """
-        df = DatabaseHelper.get_dataframe(query)
-
+        """)
         if not df.empty:
-            fig = px.line(df, x='date', y='sales', markers=True,
-                          title="Daily Sales", color_discrete_sequence=['#9D6DA9'])
+            fig = px.line(df, x="date", y="sales", markers=True, title="Daily Sales")
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No sales data for the last 7 days")
 
-    # Row 3: Quick Actions
-    st.subheader("⚡ Quick Actions")
-
-    col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-        if st.button("🛒 New Sale", use_container_width=True):
-            st.session_state.show_sale_form = True
-            st.rerun()
-
-    with col2:
-        if st.button("📦 Add Medicine", use_container_width=True):
-            st.session_state.show_add_medicine = True
-            st.rerun()
-
-    with col3:
-        if st.button("📊 View Reports", use_container_width=True):
-            st.session_state.show_reports = True
-            st.rerun()
-
-    with col4:
-        if st.button("🚨 Check Alerts", use_container_width=True):
-            st.session_state.show_alerts = True
-            st.rerun()
-
-    # Row 4: Recent Activities
     st.subheader("🕐 Recent Activities")
-
     tab1, tab2 = st.tabs(["Recent Sales", "Recent Medicines"])
 
     with tab1:
-        # Query safe pentru recent sales
-        query = """
+        df = DatabaseHelper.get_dataframe("""
             SELECT s.sale_date, m.Med_name, s.quantity, s.total
             FROM sales s
             JOIN medicines_info m ON s.medicine_code = m.Med_code
             ORDER BY s.sale_date DESC
             LIMIT 10
-        """
-        df = DatabaseHelper.get_dataframe(query)
-
+        """)
         if not df.empty:
             st.dataframe(df, use_container_width=True)
         else:
             st.info("No recent sales")
 
     with tab2:
-        # Query safe pentru recent medicines
-        query = build_safe_query("""
+        # SQLite nu are Created_at la medicines_info (și nu vrem să adăugăm).
+        # Așa că afișăm cele mai noi după ROWID (aprox. ordinea inserării).
+        df = DatabaseHelper.get_dataframe("""
             SELECT Med_name, Qty, MRP, Exp
             FROM medicines_info
-            ORDER BY Created_at DESC
+            ORDER BY rowid DESC
             LIMIT 10
         """)
-        df = DatabaseHelper.get_dataframe(query)
-
         if not df.empty:
             st.dataframe(df, use_container_width=True)
         else:
@@ -686,65 +353,44 @@ def display_dashboard():
 
 
 def display_medicines():
-    """Afișează managementul medicamentelor - COMPLET ADAPTAT"""
-
     st.subheader("📦 Medicine Management")
 
     tab1, tab2, tab3, tab4 = st.tabs(["📋 View All", "➕ Add New", "🔍 Search", "⚠️ Low Stock"])
 
-    # Tab 1: View All Medicines - ADAPTAT
+    # View All
     with tab1:
         col1, col2 = st.columns([3, 1])
-
         with col2:
             if st.button("🔄 Refresh Data", use_container_width=True):
                 st.rerun()
 
-            export_format = st.selectbox("Export as", ["CSV", "Excel"])
-
+            export_format = st.selectbox("Export as", ["CSV"])
             if st.button("📥 Export Data", use_container_width=True):
-                # Folosește query safe
-                query = build_safe_query("SELECT * FROM medicines_info ORDER BY Med_name")
-                df = DatabaseHelper.get_dataframe(query)
-
+                df = DatabaseHelper.get_dataframe("SELECT * FROM medicines_info ORDER BY Med_name")
                 if not df.empty:
-                    if export_format == "CSV":
-                        csv = df.to_csv(index=False)
-                        st.download_button(
-                            label="Download CSV",
-                            data=csv,
-                            file_name="medicines.csv",
-                            mime="text/csv"
-                        )
-                    else:
-                        st.info("Excel export requires openpyxl. Run: pip install openpyxl")
+                    csv = df.to_csv(index=False)
+                    st.download_button(
+                        label="Download CSV",
+                        data=csv,
+                        file_name="medicines.csv",
+                        mime="text/csv"
+                    )
 
-        # Folosește query safe
-        query = build_safe_query("SELECT * FROM medicines_info ORDER BY Med_name")
-        df = DatabaseHelper.get_dataframe(query)
-
+        df = DatabaseHelper.get_dataframe("SELECT * FROM medicines_info ORDER BY Med_name")
         if not df.empty:
-            st.dataframe(df, use_container_width=True, height=400)
+            st.dataframe(df, use_container_width=True, height=420)
 
-            # Statistics - safe pentru coloanele lipsă
-            if 'Qty' in df.columns and 'MRP' in df.columns:
-                total_value = (df['Qty'] * df['MRP']).sum()
-                avg_price = df['MRP'].mean()
-            else:
-                total_value = 0
-                avg_price = 0
+            total_value = (df["Qty"] * df["MRP"]).sum() if "Qty" in df.columns and "MRP" in df.columns else 0
+            avg_price = df["MRP"].mean() if "MRP" in df.columns else 0
 
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Total Medicines", len(df))
-            with col2:
-                st.metric("Total Inventory Value", f"${total_value:,.2f}")
-            with col3:
-                st.metric("Average Price", f"${avg_price:.2f}")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Total Medicines", len(df))
+            c2.metric("Total Inventory Value", f"${total_value:,.2f}")
+            c3.metric("Average Price", f"${avg_price:.2f}")
         else:
             st.info("No medicines found in database")
 
-    # Tab 2: Add New Medicine - ADAPTAT
+    # Add New
     with tab2:
         with st.form("add_medicine_form"):
             col1, col2 = st.columns(2)
@@ -754,123 +400,55 @@ def display_medicines():
                 med_name = st.text_input("Medicine Name *")
                 quantity = st.number_input("Quantity *", min_value=0, value=10)
                 mrp = st.number_input("MRP (Price) *", min_value=0.0, value=0.0, format="%.2f")
-                cost = st.number_input("Cost Price", min_value=0.0, value=0.0, format="%.2f")
 
             with col2:
-                category = st.text_input("Category")
-                mfg_date = st.date_input("Manufacturing Date", value=datetime.now())
-                exp_date = st.date_input("Expiry Date *", value=datetime.now() + timedelta(days=365))
+                mfg_date = st.date_input("Manufacturing Date", value=datetime.now().date())
+                exp_date = st.date_input("Expiry Date *", value=(datetime.now() + timedelta(days=365)).date())
                 purpose = st.text_area("Purpose")
-                supplier = st.text_input("Supplier")
-                reorder_level = st.number_input("Reorder Level", min_value=1, value=20)
 
             submitted = st.form_submit_button("💾 Save Medicine", use_container_width=True)
 
             if submitted:
                 if not med_code or not med_name or mrp <= 0:
-                    st.error("Please fill all required fields (*)")
+                    st.error("Please fill all required fields (*) and MRP > 0")
                 else:
-                    # Construiește query-ul dinamic bazat pe coloanele existente
-                    conn = Config.get_connection()
-                    if conn:
-                        try:
-                            cursor = conn.cursor()
+                    try:
+                        insert = """
+                            INSERT INTO medicines_info (Med_code, Med_name, Qty, MRP, Mfg, Exp, Purpose)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """
+                        DatabaseHelper.execute(insert, [
+                            med_code.strip(),
+                            med_name.strip(),
+                            int(quantity),
+                            float(mrp),
+                            str(mfg_date),
+                            str(exp_date),
+                            (purpose or "").strip()
+                        ])
+                        st.success(f"✅ Medicine '{med_name}' added successfully!")
+                        st.balloons()
+                    except Exception as e:
+                        st.error(f"❌ Failed to add medicine: {e}")
 
-                            # Obține coloanele existente
-                            cursor.execute("DESCRIBE medicines_info")
-                            existing_columns = [row[0] for row in cursor.fetchall()]
-
-                            # Pregătește datele pentru inserare
-                            columns = []
-                            values = []
-                            placeholders = []
-
-                            # Adaugă coloanele obligatorii
-                            mandatory_fields = {
-                                'Med_code': med_code,
-                                'Med_name': med_name,
-                                'Qty': quantity,
-                                'MRP': mrp,
-                                'Purpose': purpose if purpose else ''
-                            }
-
-                            for col, val in mandatory_fields.items():
-                                if col in existing_columns:
-                                    columns.append(col)
-                                    values.append(val)
-                                    placeholders.append("%s")
-
-                            # Adaugă coloanele opționale dacă există
-                            optional_fields = {
-                                'Cost': cost if cost > 0 else 0,
-                                'Category': category,
-                                'Mfg': mfg_date,
-                                'Exp': exp_date,
-                                'Supplier': supplier,
-                                'Reorder_level': reorder_level
-                            }
-
-                            for col, val in optional_fields.items():
-                                if col in existing_columns:
-                                    columns.append(col)
-                                    values.append(val)
-                                    placeholders.append("%s")
-
-                            # Construiește și execută query-ul
-                            if columns:
-                                columns_str = ', '.join(columns)
-                                placeholders_str = ', '.join(placeholders)
-                                query = f"INSERT INTO medicines_info ({columns_str}) VALUES ({placeholders_str})"
-
-                                cursor.execute(query, values)
-                                conn.commit()
-
-                                st.success(f"✅ Medicine '{med_name}' added successfully!")
-                                st.balloons()
-                            else:
-                                st.error("❌ No valid columns found for insertion")
-
-                        except Exception as e:
-                            st.error(f"❌ Failed to add medicine: {str(e)}")
-                        finally:
-                            cursor.close()
-                            conn.close()
-
-    # Tab 3: Search Medicine - ADAPTAT
+    # Search
     with tab3:
         col1, col2 = st.columns([1, 3])
 
         with col1:
-            # Opțiuni de căutare bazate pe coloanele existente
-            search_options = ["Name", "Code", "Purpose"]
-            if Config.check_column_exists('medicines_info', 'Category'):
-                search_options.append("Category")
-            if Config.check_column_exists('medicines_info', 'Supplier'):
-                search_options.append("Supplier")
-
-            search_by = st.selectbox("Search by", search_options)
+            search_by = st.selectbox("Search by", ["Name", "Code", "Purpose"])
             search_term = st.text_input("Search term")
 
         with col2:
             if search_term:
-                # Construiește query-ul de căutare
                 if search_by == "Name":
-                    query = "SELECT * FROM medicines_info WHERE Med_name LIKE %s"
+                    query = "SELECT * FROM medicines_info WHERE Med_name LIKE ? ORDER BY Med_name"
                 elif search_by == "Code":
-                    query = "SELECT * FROM medicines_info WHERE Med_code LIKE %s"
-                elif search_by == "Category" and Config.check_column_exists('medicines_info', 'Category'):
-                    query = "SELECT * FROM medicines_info WHERE Category LIKE %s"
-                elif search_by == "Purpose":
-                    query = "SELECT * FROM medicines_info WHERE Purpose LIKE %s"
-                elif search_by == "Supplier" and Config.check_column_exists('medicines_info', 'Supplier'):
-                    query = "SELECT * FROM medicines_info WHERE Supplier LIKE %s"
+                    query = "SELECT * FROM medicines_info WHERE Med_code LIKE ? ORDER BY Med_name"
                 else:
-                    query = "SELECT * FROM medicines_info WHERE Med_name LIKE %s"
+                    query = "SELECT * FROM medicines_info WHERE Purpose LIKE ? ORDER BY Med_name"
 
-                # Folosește query safe
-                query = build_safe_query(query)
-                df = DatabaseHelper.get_dataframe(query, (f"%{search_term}%",))
-
+                df = DatabaseHelper.get_dataframe(query, [f"%{search_term}%"])
                 if not df.empty:
                     st.dataframe(df, use_container_width=True)
                     st.info(f"Found {len(df)} results")
@@ -879,137 +457,69 @@ def display_medicines():
             else:
                 st.info("Enter a search term to find medicines")
 
-    # Tab 4: Low Stock - ADAPTAT
+    # Low Stock
     with tab4:
-        # Construiește query safe pentru low stock
-        if Config.check_column_exists('medicines_info', 'Reorder_level') and Config.check_column_exists(
-                'medicines_info', 'Supplier'):
-            query = """
-                SELECT Med_code, Med_name, Qty, Reorder_level, MRP, Supplier
-                FROM medicines_info 
-                WHERE Qty <= Reorder_level
-                ORDER BY Qty
-            """
-        elif Config.check_column_exists('medicines_info', 'Reorder_level'):
-            query = """
-                SELECT Med_code, Med_name, Qty, Reorder_level, MRP, '' as Supplier
-                FROM medicines_info 
-                WHERE Qty <= Reorder_level
-                ORDER BY Qty
-            """
-        else:
-            query = """
-                SELECT Med_code, Med_name, Qty, 20 as Reorder_level, MRP, '' as Supplier
-                FROM medicines_info 
-                WHERE Qty <= 20
-                ORDER BY Qty
-            """
-
-        df = DatabaseHelper.get_dataframe(query)
+        df = DatabaseHelper.get_dataframe("""
+            SELECT Med_code, Med_name, Qty, MRP, Exp, Purpose
+            FROM medicines_info
+            WHERE Qty <= ?
+            ORDER BY Qty ASC
+        """, [Config.LOW_STOCK_THRESHOLD])
 
         if not df.empty:
             st.markdown(f"### ⚠️ Low Stock Alert ({len(df)} items)")
-
-            # Create order suggestions
-            if 'Qty' in df.columns and 'Reorder_level' in df.columns and 'MRP' in df.columns:
-                df['Order_Qty'] = df['Reorder_level'] - df['Qty']
-                df['Order_Qty'] = df['Order_Qty'].apply(lambda x: max(x, 0))  # Numere pozitive
-                df['Order_Value'] = df['Order_Qty'] * df['MRP']
-            else:
-                df['Order_Qty'] = 0
-                df['Order_Value'] = 0
-
             st.dataframe(df, use_container_width=True)
 
-            # Order summary
-            total_order_qty = df['Order_Qty'].sum()
-            total_order_value = df['Order_Value'].sum()
+            total_order_qty = int((Config.LOW_STOCK_THRESHOLD - df["Qty"]).clip(lower=0).sum())
+            est_value = float(((Config.LOW_STOCK_THRESHOLD - df["Qty"]).clip(lower=0) * df["MRP"]).sum())
 
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Total to Order", f"{total_order_qty} units")
-            with col2:
-                st.metric("Estimated Cost", f"${total_order_value:.2f}")
-
-            # Generate order button
-            if st.button("📋 Generate Purchase Order", use_container_width=True):
-                order_text = "PURCHASE ORDER\n"
-                order_text += "=" * 50 + "\n"
-                order_text += f"Date: {datetime.now().strftime('%Y-%m-%d')}\n"
-                order_text += f"Generated by: {st.session_state.user_name}\n"
-                order_text += "=" * 50 + "\n\n"
-
-                for _, row in df.iterrows():
-                    if row['Order_Qty'] > 0:
-                        order_text += f"• {row['Med_name']} ({row['Med_code']})\n"
-                        order_text += f"  Order: {row['Order_Qty']} units @ ${row['MRP']:.2f}\n"
-                        if 'Supplier' in df.columns and row['Supplier']:
-                            order_text += f"  Supplier: {row['Supplier']}\n\n"
-
-                order_text += "=" * 50 + "\n"
-                order_text += f"TOTAL: {total_order_qty} units, ${total_order_value:.2f}"
-
-                st.text_area("Purchase Order", order_text, height=300)
-
-                # Download option
-                st.download_button(
-                    label="📥 Download Order",
-                    data=order_text,
-                    file_name="purchase_order.txt",
-                    mime="text/plain"
-                )
+            c1, c2 = st.columns(2)
+            c1.metric("Suggested Total to Order", f"{total_order_qty} units")
+            c2.metric("Estimated Cost (MRP-based)", f"${est_value:.2f}")
         else:
             st.success("🎉 No low stock items!")
 
 
 def display_sales():
-    """Afișează managementul vânzărilor - COMPLET (funcționează deja)"""
-    # Această funcție este deja compatibilă cu structura ta
-    # O păstrez nemodificată deoarece folosește doar coloanele de bază
-
     st.subheader("💰 Sales Management")
 
     tab1, tab2 = st.tabs(["🛒 New Sale", "📋 Sales History"])
 
-    # Tab 1: New Sale
+    # New Sale
     with tab1:
         with st.form("new_sale_form"):
             col1, col2 = st.columns([2, 1])
 
+            selected_med = None
+            total = 0.0
+            quantity = 0
+
             with col1:
-                # Get available medicines
-                query = "SELECT Med_code, Med_name, MRP, Qty FROM medicines_info WHERE Qty > 0 ORDER BY Med_name"
-                result = DatabaseHelper.execute_query(query)
+                dfm = DatabaseHelper.get_dataframe("""
+                    SELECT Med_code, Med_name, MRP, Qty
+                    FROM medicines_info
+                    WHERE Qty > 0
+                    ORDER BY Med_name
+                """)
 
-                if result and result[0]:
-                    medicines = result[0]
-                    medicine_options = {f"{m[1]} (Stock: {m[3]})": m for m in medicines}
+                if not dfm.empty:
+                    options = {f"{r.Med_name} (Stock: {r.Qty})": r for r in dfm.itertuples(index=False)}
+                    selected_display = st.selectbox("Select Medicine", options=list(options.keys()))
+                    selected_med = options[selected_display]
 
-                    selected_display = st.selectbox(
-                        "Select Medicine",
-                        options=list(medicine_options.keys()),
-                        help="Select a medicine from available stock"
+                    st.info(f"Price: ${float(selected_med.MRP):.2f} | Available: {int(selected_med.Qty)} units")
+
+                    quantity = st.number_input(
+                        "Quantity",
+                        min_value=1,
+                        max_value=int(selected_med.Qty),
+                        value=1
                     )
 
-                    if selected_display:
-                        selected_med = medicine_options[selected_display]
-                        st.info(f"Price: ${selected_med[2]:.2f} | Available: {selected_med[3]} units")
-
-                        quantity = st.number_input(
-                            "Quantity",
-                            min_value=1,
-                            max_value=selected_med[3],
-                            value=1,
-                            help=f"Maximum {selected_med[3]} units available"
-                        )
-
-                        # Calculate total
-                        total = quantity * selected_med[2]
-                        st.metric("Total Amount", f"${total:.2f}")
+                    total = float(quantity) * float(selected_med.MRP)
+                    st.metric("Total Amount", f"${total:.2f}")
                 else:
                     st.warning("⚠️ No medicines in stock!")
-                    quantity = 0
-                    total = 0
 
             with col2:
                 st.markdown("### Sale Details")
@@ -1017,353 +527,277 @@ def display_sales():
                 payment_method = st.selectbox("Payment Method", ["Cash", "Card", "Insurance"])
                 discount = st.number_input("Discount ($)", min_value=0.0, value=0.0, format="%.2f")
 
-                final_total = max(0, total - discount)
+                final_total = max(0.0, total - float(discount))
                 if discount > 0:
                     st.metric("Final Total", f"${final_total:.2f}")
 
             submitted = st.form_submit_button("💳 Process Sale", use_container_width=True)
 
             if submitted:
-                if not result or not result[0]:
+                if selected_med is None:
                     st.error("No medicine selected!")
                 elif quantity <= 0:
                     st.error("Quantity must be greater than 0!")
                 else:
-                    # Process the sale
-                    med = selected_med
+                    # tranzacție "manuală" pe SQLite: verificare + update + insert
+                    # 1) verificăm stocul actual (anti-race)
+                    dfcheck = DatabaseHelper.get_dataframe(
+                        "SELECT Qty FROM medicines_info WHERE Med_code = ?",
+                        [selected_med.Med_code]
+                    )
+                    if dfcheck.empty:
+                        st.error("Medicine not found!")
+                        return
+                    current_qty = int(dfcheck.iloc[0]["Qty"])
+                    if current_qty < int(quantity):
+                        st.error(f"Not enough stock. Available: {current_qty}")
+                        return
 
-                    # 1. Add sale record
-                    sale_query = """
+                    # 2) scădem stoc
+                    upd = DatabaseHelper.execute(
+                        "UPDATE medicines_info SET Qty = Qty - ? WHERE Med_code = ?",
+                        [int(quantity), selected_med.Med_code]
+                    )
+                    if upd == 0:
+                        st.error("Failed to update stock.")
+                        return
+
+                    # 3) inserăm vânzarea
+                    DatabaseHelper.execute("""
                         INSERT INTO sales (medicine_code, quantity, sale_price, total, cashier_id)
-                        VALUES (%s, %s, %s, %s, %s)
-                    """
-                    sale_values = (med[0], quantity, med[2], final_total, st.session_state.user_id)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, [
+                        selected_med.Med_code,
+                        int(quantity),
+                        float(selected_med.MRP),
+                        float(final_total),
+                        int(st.session_state.user_id)
+                    ])
 
-                    # 2. Update stock
-                    update_query = "UPDATE medicines_info SET Qty = Qty - %s WHERE Med_code = %s"
-                    update_values = (quantity, med[0])
+                    # 4) luăm sale_id-ul ultimei vânzări (SQLite)
+                    dfid = DatabaseHelper.get_dataframe("SELECT last_insert_rowid() AS id")
+                    sale_id = int(dfid.iloc[0]["id"]) if not dfid.empty else 0
 
-                    # Execute in transaction
-                    conn = Config.get_connection()
-                    if conn:
-                        try:
-                            cursor = conn.cursor()
+                    receipt = f"""
+╔══════════════════════════════════════════╗
+║         PHARMACY RECEIPT                 ║
+╠══════════════════════════════════════════╣
+║ Receipt #: {sale_id:^30} ║
+║ Date: {datetime.now().strftime('%Y-%m-%d %H:%M'):^26} ║
+╠══════════════════════════════════════════╣
+║ Medicine: {str(selected_med.Med_name):<27} ║
+║ Quantity: {int(quantity):<26} ║
+║ Price: ${float(selected_med.MRP):<28.2f} ║
+╠══════════════════════════════════════════╣
+║ Subtotal: ${total:<27.2f} ║
+║ Discount: ${float(discount):<27.2f} ║
+║ Final Total: ${float(final_total):<24.2f} ║
+╠══════════════════════════════════════════╣
+║ Customer: {customer_name:<25} ║
+║ Payment: {payment_method:<26} ║
+║ Cashier: {st.session_state.user_name:<25} ║
+╚══════════════════════════════════════════╝
+"""
 
-                            # Add sale
-                            cursor.execute(sale_query, sale_values)
-                            sale_id = cursor.lastrowid
+                    st.success("✅ Sale processed successfully!")
+                    st.balloons()
+                    st.code(receipt, language=None)
 
-                            # Update stock
-                            cursor.execute(update_query, update_values)
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        if st.button("🖨️ Print Receipt"):
+                            st.info("Receipt sent to printer (demo)")
+                    with c2:
+                        st.download_button(
+                            label="📥 Download Receipt",
+                            data=receipt,
+                            file_name=f"receipt_{sale_id}.txt",
+                            mime="text/plain"
+                        )
 
-                            conn.commit()
-
-                            # Generate receipt
-                            receipt = f"""
-                            ╔══════════════════════════════════════════╗
-                            ║         PHARMACY RECEIPT                 ║
-                            ╠══════════════════════════════════════════╣
-                            ║ Receipt #: {sale_id:^30} ║
-                            ║ Date: {datetime.now().strftime('%Y-%m-%d %H:%M'):^26} ║
-                            ╠══════════════════════════════════════════╣
-                            ║ Medicine: {med[1]:<27} ║
-                            ║ Quantity: {quantity:<26} ║
-                            ║ Price: ${med[2]:<28.2f} ║
-                            ╠══════════════════════════════════════════╣
-                            ║ Subtotal: ${total:<27.2f} ║
-                            ║ Discount: ${discount:<27.2f} ║
-                            ║ Final Total: ${final_total:<24.2f} ║
-                            ╠══════════════════════════════════════════╣
-                            ║ Customer: {customer_name:<25} ║
-                            ║ Payment: {payment_method:<26} ║
-                            ║ Cashier: {st.session_state.user_name:<25} ║
-                            ╚══════════════════════════════════════════╝
-                            """
-
-                            st.success("✅ Sale processed successfully!")
-                            st.balloons()
-
-                            # Show receipt
-                            st.code(receipt, language=None)
-
-                            # Option to print/download receipt
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                if st.button("🖨️ Print Receipt"):
-                                    st.info("Receipt sent to printer")
-                            with col2:
-                                st.download_button(
-                                    label="📥 Download Receipt",
-                                    data=receipt,
-                                    file_name=f"receipt_{sale_id}.txt",
-                                    mime="text/plain"
-                                )
-
-                        except Exception as e:
-                            conn.rollback()
-                            st.error(f"❌ Error processing sale: {e}")
-                        finally:
-                            cursor.close()
-                            conn.close()
-
-    # Tab 2: Sales History
+    # Sales History
     with tab2:
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            date_filter = st.date_input("Filter by Date", value=datetime.now())
-
+            date_filter = st.date_input("Filter by Date", value=datetime.now().date())
         with col2:
             period = st.selectbox("Period", ["Today", "This Week", "This Month", "All Time"])
-
         with col3:
             if st.button("🔄 Refresh", use_container_width=True):
                 st.rerun()
 
-        # Build query based on filters
         if period == "Today":
-            date_str = date_filter.strftime('%Y-%m-%d')
-            where_clause = f"WHERE DATE(s.sale_date) = '{date_str}'"
+            where_clause = "WHERE date(s.sale_date) = ?"
+            params = [str(date_filter)]
         elif period == "This Week":
-            where_clause = "WHERE YEARWEEK(s.sale_date) = YEARWEEK(CURDATE())"
+            where_clause = "WHERE date(s.sale_date) >= date('now','-7 day')"
+            params = []
         elif period == "This Month":
-            where_clause = "WHERE MONTH(s.sale_date) = MONTH(CURDATE()) AND YEAR(s.sale_date) = YEAR(CURDATE())"
+            where_clause = "WHERE strftime('%Y-%m', s.sale_date) = strftime('%Y-%m','now')"
+            params = []
         else:
             where_clause = ""
+            params = []
 
         query = f"""
-            SELECT s.sale_id, s.sale_date, m.Med_name, s.quantity, 
+            SELECT s.sale_id, s.sale_date, m.Med_name, s.quantity,
                    s.sale_price, s.total
             FROM sales s
             JOIN medicines_info m ON s.medicine_code = m.Med_code
             {where_clause}
             ORDER BY s.sale_date DESC
         """
-
-        df = DatabaseHelper.get_dataframe(query)
+        df = DatabaseHelper.get_dataframe(query, params)
 
         if not df.empty:
-            # Display sales
             st.dataframe(df, use_container_width=True, height=400)
 
-            # Statistics
-            total_sales = df['total'].sum()
-            avg_sale = df['total'].mean()
-            total_items = df['quantity'].sum()
+            total_sales = df["total"].sum()
+            avg_sale = df["total"].mean()
+            total_items = df["quantity"].sum()
 
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Total Sales", f"${total_sales:.2f}")
-            with col2:
-                st.metric("Average Sale", f"${avg_sale:.2f}")
-            with col3:
-                st.metric("Items Sold", total_items)
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Total Sales", f"${total_sales:.2f}")
+            c2.metric("Average Sale", f"${avg_sale:.2f}")
+            c3.metric("Items Sold", int(total_items))
 
-            # Chart
             st.subheader("📈 Sales Trend")
-            df['sale_date'] = pd.to_datetime(df['sale_date'])
-            df['date'] = df['sale_date'].dt.date
-
-            daily_sales = df.groupby('date')['total'].sum().reset_index()
-
+            df["sale_date"] = pd.to_datetime(df["sale_date"])
+            df["date"] = df["sale_date"].dt.date
+            daily_sales = df.groupby("date")["total"].sum().reset_index()
             if not daily_sales.empty:
-                fig = px.line(daily_sales, x='date', y='total',
-                              title="Daily Sales Trend", markers=True)
+                fig = px.line(daily_sales, x="date", y="total", title="Daily Sales Trend", markers=True)
                 st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No sales records found for the selected period")
 
 
-def display_reports():
-    """Afișează rapoarte - ADAPTAT"""
-
+def display_reports(finance=False):
     st.subheader("📈 Reports & Analytics")
 
     report_type = st.selectbox(
         "Select Report Type",
-        ["Daily Sales Report", "Monthly Summary", "Inventory Report",
-         "Top Selling Products", "Financial Summary"]
+        ["Daily Sales Report", "Monthly Summary", "Inventory Report", "Top Selling Products", "Financial Summary"]
     )
 
     if report_type == "Daily Sales Report":
-        date = st.date_input("Select Date", value=datetime.now())
+        date = st.date_input("Select Date", value=datetime.now().date())
 
         if st.button("Generate Report", use_container_width=True):
-            query = """
+            df = DatabaseHelper.get_dataframe("""
                 SELECT s.sale_date, m.Med_name, s.quantity, s.sale_price, s.total
                 FROM sales s
                 JOIN medicines_info m ON s.medicine_code = m.Med_code
-                WHERE DATE(s.sale_date) = %s
+                WHERE date(s.sale_date) = ?
                 ORDER BY s.sale_date
-            """
-
-            df = DatabaseHelper.get_dataframe(query, (date,))
+            """, [str(date)])
 
             if not df.empty:
-                # Summary
-                total_sales = df['total'].sum()
-                total_items = df['quantity'].sum()
-                avg_sale = df['total'].mean()
+                total_sales = df["total"].sum()
+                total_items = df["quantity"].sum()
+                avg_sale = df["total"].mean()
 
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Total Sales", f"${total_sales:.2f}")
-                with col2:
-                    st.metric("Items Sold", total_items)
-                with col3:
-                    st.metric("Average Sale", f"${avg_sale:.2f}")
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Total Sales", f"${total_sales:.2f}")
+                c2.metric("Items Sold", int(total_items))
+                c3.metric("Average Sale", f"${avg_sale:.2f}")
 
-                # Detailed data
                 st.subheader("📋 Detailed Sales")
                 st.dataframe(df, use_container_width=True)
 
-                # Top products
                 st.subheader("🏆 Top Products of the Day")
-                top_products = df.groupby('Med_name')['quantity'].sum().nlargest(5)
-
+                top_products = df.groupby("Med_name")["quantity"].sum().nlargest(5)
                 fig = px.bar(x=top_products.index, y=top_products.values,
                              title="Top 5 Products by Quantity",
                              labels={'x': 'Product', 'y': 'Quantity Sold'})
                 st.plotly_chart(fig, use_container_width=True)
-
             else:
                 st.info(f"No sales recorded on {date}")
 
     elif report_type == "Monthly Summary":
-        month = st.selectbox(
-            "Select Month",
-            pd.date_range(end=datetime.now(), periods=12, freq='M').strftime("%Y-%m").tolist()
-        )
+        months = pd.date_range(end=datetime.now(), periods=12, freq="ME").strftime("%Y-%m").tolist()
+        month = st.selectbox("Select Month", months)
 
         if st.button("Generate Monthly Report", use_container_width=True):
-            query = """
-                SELECT 
-                    DATE(s.sale_date) as date,
+            df = DatabaseHelper.get_dataframe("""
+                SELECT
+                    date(s.sale_date) as date,
                     COUNT(DISTINCT s.sale_id) as transactions,
                     SUM(s.quantity) as items_sold,
                     SUM(s.total) as daily_total
                 FROM sales s
-                WHERE DATE_FORMAT(s.sale_date, '%%Y-%%m') = %s
-                GROUP BY DATE(s.sale_date)
+                WHERE strftime('%Y-%m', s.sale_date) = ?
+                GROUP BY date(s.sale_date)
                 ORDER BY date
-            """
-
-            df = DatabaseHelper.get_dataframe(query, (month,))
+            """, [month])
 
             if not df.empty:
-                # Summary
-                total_revenue = df['daily_total'].sum()
-                total_transactions = df['transactions'].sum()
-                total_items = df['items_sold'].sum()
-                avg_daily = df['daily_total'].mean()
+                total_revenue = df["daily_total"].sum()
+                total_transactions = df["transactions"].sum()
+                total_items = df["items_sold"].sum()
+                avg_daily = df["daily_total"].mean()
 
                 st.subheader(f"📅 Monthly Report - {month}")
 
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("Total Revenue", f"${total_revenue:.2f}")
-                with col2:
-                    st.metric("Transactions", total_transactions)
-                with col3:
-                    st.metric("Items Sold", total_items)
-                with col4:
-                    st.metric("Avg Daily", f"${avg_daily:.2f}")
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Total Revenue", f"${total_revenue:.2f}")
+                c2.metric("Transactions", int(total_transactions))
+                c3.metric("Items Sold", int(total_items))
+                c4.metric("Avg Daily", f"${avg_daily:.2f}")
 
-                # Chart
-                fig = px.line(df, x='date', y='daily_total',
-                              title="Daily Revenue Trend", markers=True)
+                fig = px.line(df, x="date", y="daily_total", title="Daily Revenue Trend", markers=True)
                 st.plotly_chart(fig, use_container_width=True)
 
-                # Data table
                 st.dataframe(df, use_container_width=True)
-
             else:
                 st.info(f"No data available for {month}")
 
     elif report_type == "Inventory Report":
-        # Query adaptat pentru Category
-        if Config.check_column_exists('medicines_info', 'Category'):
-            query = """
-                SELECT 
-                    CASE 
-                        WHEN Category IS NULL OR Category = '' THEN 'Uncategorized'
-                        ELSE Category 
-                    END as Category,
-                    COUNT(*) as count, 
-                    SUM(Qty) as total_qty, 
-                    AVG(MRP) as avg_price, 
-                    SUM(Qty * MRP) as total_value
-                FROM medicines_info 
-                GROUP BY 
-                    CASE 
-                        WHEN Category IS NULL OR Category = '' THEN 'Uncategorized'
-                        ELSE Category 
-                    END
-                ORDER BY total_value DESC
-            """
-        else:
-            # Dacă Category nu există, grupăm după primul cuvânt din Purpose
-            query = """
-                SELECT 
-                    CASE 
-                        WHEN Purpose IS NULL OR Purpose = '' THEN 'Uncategorized'
-                        ELSE SUBSTRING_INDEX(Purpose, ' ', 1)
-                    END as Category,
-                    COUNT(*) as count, 
-                    SUM(Qty) as total_qty, 
-                    AVG(MRP) as avg_price, 
-                    SUM(Qty * MRP) as total_value
-                FROM medicines_info 
-                GROUP BY 
-                    CASE 
-                        WHEN Purpose IS NULL OR Purpose = '' THEN 'Uncategorized'
-                        ELSE SUBSTRING_INDEX(Purpose, ' ', 1)
-                    END
-                ORDER BY total_value DESC
-            """
-
-        df = DatabaseHelper.get_dataframe(query)
-
+        df = DatabaseHelper.get_dataframe("""
+            SELECT
+                CASE WHEN Purpose IS NULL OR Purpose='' THEN 'Unspecified' ELSE Purpose END as GroupKey,
+                COUNT(*) as count,
+                SUM(Qty) as total_qty,
+                AVG(MRP) as avg_price,
+                SUM(Qty * MRP) as total_value
+            FROM medicines_info
+            GROUP BY GroupKey
+            ORDER BY total_value DESC
+        """)
         if not df.empty:
-            st.subheader("📦 Inventory by Category")
+            st.subheader("📦 Inventory Overview (grouped by Purpose)")
 
-            # Pie chart
-            fig1 = px.pie(df, values='total_value', names='Category',
-                          title="Inventory Value by Category")
+            fig1 = px.pie(df, values="total_value", names="GroupKey", title="Inventory Value by Purpose")
             st.plotly_chart(fig1, use_container_width=True)
 
-            # Bar chart
-            fig2 = px.bar(df, x='Category', y='total_qty',
-                          title="Stock Quantity by Category")
+            fig2 = px.bar(df, x="GroupKey", y="total_qty", title="Stock Quantity by Purpose")
             st.plotly_chart(fig2, use_container_width=True)
 
-            # Data table
             st.dataframe(df, use_container_width=True)
 
-            # Summary
-            total_value = df['total_value'].sum()
-            total_items = df['total_qty'].sum()
-
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Total Inventory Value", f"${total_value:,.2f}")
-            with col2:
-                st.metric("Total Items in Stock", f"{total_items:,}")
+            total_value = df["total_value"].sum()
+            total_items = df["total_qty"].sum()
+            c1, c2 = st.columns(2)
+            c1.metric("Total Inventory Value", f"${total_value:,.2f}")
+            c2.metric("Total Items in Stock", f"{int(total_items):,}")
+        else:
+            st.info("No inventory data available")
 
     elif report_type == "Top Selling Products":
         period = st.selectbox("Time Period", ["Last 7 Days", "Last 30 Days", "Last 90 Days", "All Time"])
 
         if period == "Last 7 Days":
-            where_clause = "WHERE s.sale_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)"
+            where_clause = "WHERE date(s.sale_date) >= date('now','-7 day')"
         elif period == "Last 30 Days":
-            where_clause = "WHERE s.sale_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)"
+            where_clause = "WHERE date(s.sale_date) >= date('now','-30 day')"
         elif period == "Last 90 Days":
-            where_clause = "WHERE s.sale_date >= DATE_SUB(CURDATE(), INTERVAL 90 DAY)"
+            where_clause = "WHERE date(s.sale_date) >= date('now','-90 day')"
         else:
             where_clause = ""
 
-        query = f"""
-            SELECT 
+        df = DatabaseHelper.get_dataframe(f"""
+            SELECT
                 m.Med_name,
                 COUNT(DISTINCT s.sale_id) as times_sold,
                 SUM(s.quantity) as total_quantity,
@@ -1375,359 +809,210 @@ def display_reports():
             GROUP BY m.Med_code, m.Med_name
             ORDER BY total_revenue DESC
             LIMIT 10
-        """
-
-        df = DatabaseHelper.get_dataframe(query)
+        """)
 
         if not df.empty:
             st.subheader(f"🏆 Top 10 Products - {period}")
 
-            # Bar chart for revenue
-            fig1 = px.bar(df, x='Med_name', y='total_revenue',
-                          title="Top Products by Revenue")
+            fig1 = px.bar(df, x="Med_name", y="total_revenue", title="Top Products by Revenue")
             st.plotly_chart(fig1, use_container_width=True)
 
-            # Bar chart for quantity
-            fig2 = px.bar(df, x='Med_name', y='total_quantity',
-                          title="Top Products by Quantity Sold")
+            fig2 = px.bar(df, x="Med_name", y="total_quantity", title="Top Products by Quantity Sold")
             st.plotly_chart(fig2, use_container_width=True)
 
-            # Data table
             st.dataframe(df, use_container_width=True)
+        else:
+            st.info("No sales data for selected period")
 
     elif report_type == "Financial Summary":
-        # Get financial data
-        conn = Config.get_connection()
-        if conn:
-            cursor = conn.cursor()
+        df_total = DatabaseHelper.get_dataframe("SELECT COALESCE(SUM(total),0) AS s FROM sales")
+        total_sales = float(df_total.iloc[0]["s"]) if not df_total.empty else 0.0
 
-            # Total sales
-            cursor.execute("SELECT SUM(total) FROM sales")
-            total_sales = cursor.fetchone()[0] or 0
+        df_today = DatabaseHelper.get_dataframe(
+            "SELECT COALESCE(SUM(total),0) AS s FROM sales WHERE date(sale_date)=date('now')"
+        )
+        today_sales = float(df_today.iloc[0]["s"]) if not df_today.empty else 0.0
 
-            # Today's sales
-            today = datetime.now().strftime('%Y-%m-%d')
-            cursor.execute("SELECT SUM(total) FROM sales WHERE DATE(sale_date) = %s", (today,))
-            today_sales = cursor.fetchone()[0] or 0
+        df_inv = DatabaseHelper.get_dataframe("SELECT COALESCE(SUM(Qty * MRP),0) AS v FROM medicines_info")
+        inventory_value = float(df_inv.iloc[0]["v"]) if not df_inv.empty else 0.0
 
-            # Inventory value - safe pentru coloanele lipsă
-            try:
-                cursor.execute("SELECT SUM(Qty * MRP) FROM medicines_info")
-                inventory_value = cursor.fetchone()[0] or 0
-            except:
-                inventory_value = 0
+        df_cnt = DatabaseHelper.get_dataframe("SELECT COUNT(*) AS c FROM medicines_info")
+        product_count = int(df_cnt.iloc[0]["c"]) if not df_cnt.empty else 0
 
-            # Number of products
-            cursor.execute("SELECT COUNT(*) FROM medicines_info")
-            product_count = cursor.fetchone()[0] or 0
+        st.subheader("💰 Financial Summary")
 
-            cursor.close()
-            conn.close()
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total Sales (All Time)", f"${total_sales:,.2f}")
+        c2.metric("Today's Sales", f"${today_sales:,.2f}")
+        c3.metric("Inventory Value", f"${inventory_value:,.2f}")
+        c4.metric("Products in Stock", product_count)
 
-            # Display metrics
-            st.subheader("💰 Financial Summary")
-
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Total Sales (All Time)", f"${total_sales:,.2f}")
-            with col2:
-                st.metric("Today's Sales", f"${today_sales:,.2f}")
-            with col3:
-                st.metric("Inventory Value", f"${inventory_value:,.2f}")
-            with col4:
-                st.metric("Products in Stock", product_count)
-
-            # Monthly trend
-            query = """
-                SELECT 
-                    DATE_FORMAT(sale_date, '%%Y-%%m') as month,
-                    SUM(total) as monthly_sales,
-                    COUNT(*) as transactions
-                FROM sales
-                GROUP BY DATE_FORMAT(sale_date, '%%Y-%%m')
-                ORDER BY month DESC
-                LIMIT 6
-            """
-
-            df = DatabaseHelper.get_dataframe(query)
-
-            if not df.empty:
-                fig = px.line(df, x='month', y='monthly_sales',
-                              title="Monthly Sales Trend (Last 6 Months)",
-                              markers=True)
-                st.plotly_chart(fig, use_container_width=True)
+        df = DatabaseHelper.get_dataframe("""
+            SELECT strftime('%Y-%m', sale_date) as month,
+                   SUM(total) as monthly_sales,
+                   COUNT(*) as transactions
+            FROM sales
+            GROUP BY strftime('%Y-%m', sale_date)
+            ORDER BY month DESC
+            LIMIT 6
+        """)
+        if not df.empty:
+            fig = px.line(df, x="month", y="monthly_sales",
+                          title="Monthly Sales Trend (Last 6 Months)", markers=True)
+            st.plotly_chart(fig, use_container_width=True)
 
 
 def display_alerts():
-    """Afișează notificări și alerte - ADAPTAT"""
-
     st.subheader("🚨 System Alerts & Notifications")
 
     tab1, tab2, tab3 = st.tabs(["⚠️ Low Stock", "📅 Expiry Alerts", "🔔 All Notifications"])
 
-    # Tab 1: Low Stock - ADAPTAT
     with tab1:
-        # Query adaptat pentru Reorder_level
-        if Config.check_column_exists('medicines_info', 'Reorder_level') and Config.check_column_exists(
-                'medicines_info', 'Supplier'):
-            query = """
-                SELECT Med_code, Med_name, Qty, Reorder_level, MRP, Supplier,
-                       (Reorder_level - Qty) as need_to_order
-                FROM medicines_info 
-                WHERE Qty <= Reorder_level
-                ORDER BY Qty
-            """
-        elif Config.check_column_exists('medicines_info', 'Reorder_level'):
-            query = """
-                SELECT Med_code, Med_name, Qty, Reorder_level, MRP, '' as Supplier,
-                       (Reorder_level - Qty) as need_to_order
-                FROM medicines_info 
-                WHERE Qty <= Reorder_level
-                ORDER BY Qty
-            """
-        else:
-            query = """
-                SELECT Med_code, Med_name, Qty, 20 as Reorder_level, MRP, '' as Supplier,
-                       (20 - Qty) as need_to_order
-                FROM medicines_info 
-                WHERE Qty <= 20
-                ORDER BY Qty
-            """
-
-        df = DatabaseHelper.get_dataframe(query)
+        df = DatabaseHelper.get_dataframe("""
+            SELECT Med_code, Med_name, Qty, MRP, Exp
+            FROM medicines_info
+            WHERE Qty <= ?
+            ORDER BY Qty ASC
+        """, [Config.LOW_STOCK_THRESHOLD])
 
         if not df.empty:
             st.markdown(f"### ⚠️ Low Stock Alerts ({len(df)} items)")
+            st.dataframe(df, use_container_width=True)
 
-            for idx, row in df.iterrows():
-                with st.container():
-                    col1, col2, col3 = st.columns([3, 1, 1])
-
-                    with col1:
-                        st.write(f"**{row['Med_name']}** ({row['Med_code']})")
-                        st.write(f"Current: {row['Qty']} | Reorder at: {row['Reorder_level']}")
-                        if 'Supplier' in df.columns and row['Supplier']:
-                            st.write(f"Supplier: {row['Supplier']}")
-
-                    with col2:
-                        need = max(row['need_to_order'], 0)
-                        st.metric("Need", f"{need}")
-
-                    with col3:
-                        if st.button(f"Order", key=f"order_{row['Med_code']}_{idx}"):
-                            st.info(f"Order placed for {row['Med_name']}")
-
-            # Summary
-            total_to_order = max(df['need_to_order'].sum(), 0)
-            estimated_cost = 0
-            if 'MRP' in df.columns:
-                estimated_cost = (df['need_to_order'].clip(lower=0) * df['MRP']).sum()
+            need_to_order = (Config.LOW_STOCK_THRESHOLD - df["Qty"]).clip(lower=0)
+            total_to_order = int(need_to_order.sum())
+            est_cost = float((need_to_order * df["MRP"]).sum())
 
             st.markdown("---")
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("Total Units to Order", int(total_to_order))
-            with col2:
-                st.metric("Estimated Cost", f"${estimated_cost:.2f}")
-
-            # Quick order button
-            if st.button("📋 Generate Bulk Order", use_container_width=True):
-                order_list = []
-                for _, row in df.iterrows():
-                    if row['need_to_order'] > 0:
-                        order_list.append({
-                            'Medicine': row['Med_name'],
-                            'Code': row['Med_code'],
-                            'Order Qty': max(row['need_to_order'], 0),
-                            'Price': row['MRP'] if 'MRP' in df.columns else 0,
-                            'Supplier': row['Supplier'] if 'Supplier' in df.columns else ''
-                        })
-
-                if order_list:
-                    order_df = pd.DataFrame(order_list)
-                    st.dataframe(order_df, use_container_width=True)
-
-                    csv = order_df.to_csv(index=False)
-                    st.download_button(
-                        label="📥 Download Order List",
-                        data=csv,
-                        file_name="bulk_order.csv",
-                        mime="text/csv"
-                    )
-                else:
-                    st.info("No items need to be ordered")
+            c1, c2 = st.columns(2)
+            c1.metric("Total Units to Order", total_to_order)
+            c2.metric("Estimated Cost (MRP-based)", f"${est_cost:.2f}")
         else:
             st.success("🎉 No low stock alerts!")
 
-    # Tab 2: Expiry Alerts - ADAPTAT
     with tab2:
         col1, col2 = st.columns(2)
 
         with col1:
-            # Expired medicines
-            query = """
+            df_expired = DatabaseHelper.get_dataframe("""
                 SELECT Med_code, Med_name, Exp, Qty, MRP
-                FROM medicines_info 
-                WHERE Exp < CURDATE() AND Qty > 0
-                ORDER BY Exp
-            """
-
-            df_expired = DatabaseHelper.get_dataframe(query)
-
+                FROM medicines_info
+                WHERE Exp IS NOT NULL AND Exp != ''
+                  AND date(Exp) < date('now')
+                  AND Qty > 0
+                ORDER BY date(Exp) ASC
+            """)
             if not df_expired.empty:
                 st.markdown(f"### ❌ Expired ({len(df_expired)})")
-
                 for _, row in df_expired.iterrows():
-                    with st.container():
-                        st.error(f"**{row['Med_name']}** - Expired: {row['Exp']}")
-                        if 'Qty' in df_expired.columns and 'MRP' in df_expired.columns:
-                            st.write(f"Stock: {row['Qty']} units | Value: ${row['Qty'] * row['MRP']:.2f}")
+                    st.error(f"**{row['Med_name']}** - Expired: {row['Exp']} | Stock: {row['Qty']}")
             else:
                 st.success("✅ No expired medicines!")
 
         with col2:
-            # Expiring soon (next 30 days)
-            thirty_days = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
-            query = f"""
+            df_expiring = DatabaseHelper.get_dataframe("""
                 SELECT Med_code, Med_name, Exp, Qty, MRP,
-                       DATEDIFF(Exp, CURDATE()) as days_left
-                FROM medicines_info 
-                WHERE Exp BETWEEN CURDATE() AND '{thirty_days}'
-                ORDER BY Exp
-            """
-
-            df_expiring = DatabaseHelper.get_dataframe(query)
-
+                       CAST(julianday(Exp) - julianday(date('now')) AS INTEGER) as days_left
+                FROM medicines_info
+                WHERE Exp IS NOT NULL AND Exp != ''
+                  AND date(Exp) BETWEEN date('now') AND date('now','+30 day')
+                ORDER BY date(Exp) ASC
+            """)
             if not df_expiring.empty:
                 st.markdown(f"### ⏰ Expiring Soon ({len(df_expiring)})")
-
                 for _, row in df_expiring.iterrows():
-                    with st.container():
-                        days_left = row['days_left']
-                        days_color = "red" if days_left <= 7 else "orange" if days_left <= 14 else "blue"
-                        st.markdown(
-                            f"**{row['Med_name']}** - <span style='color:{days_color}'>{days_left} days left</span>",
-                            unsafe_allow_html=True)
-                        st.write(f"Expires: {row['Exp']}")
-                        if 'Qty' in df_expiring.columns:
-                            st.write(f"Stock: {row['Qty']}")
+                    days_left = int(row["days_left"])
+                    st.warning(f"**{row['Med_name']}** - {days_left} days left | Expires: {row['Exp']} | Stock: {row['Qty']}")
             else:
                 st.success("✅ No medicines expiring soon!")
 
-    # Tab 3: All Notifications - ADAPTAT
     with tab3:
-        # Combine all alerts
         alerts = []
 
-        # Low stock alerts
-        if Config.check_column_exists('medicines_info', 'Reorder_level'):
-            query_low = "SELECT Med_name, Qty, Reorder_level FROM medicines_info WHERE Qty <= Reorder_level"
-        else:
-            query_low = "SELECT Med_name, Qty, 20 as Reorder_level FROM medicines_info WHERE Qty <= 20"
-
-        df_low = DatabaseHelper.get_dataframe(query_low)
+        df_low = DatabaseHelper.get_dataframe(
+            "SELECT Med_name, Qty FROM medicines_info WHERE Qty <= ?",
+            [Config.LOW_STOCK_THRESHOLD]
+        )
         for _, row in df_low.iterrows():
             alerts.append({
-                'type': 'low_stock',
-                'medicine': row['Med_name'],
-                'message': f"Low stock: {row['Qty']}/{row['Reorder_level']}",
-                'priority': 'high',
-                'icon': '⚠️'
+                "priority": "high",
+                "icon": "⚠️",
+                "medicine": row["Med_name"],
+                "message": f"Low stock: {row['Qty']}/{Config.LOW_STOCK_THRESHOLD}"
             })
 
-        # Expired alerts
-        query_expired = "SELECT Med_name, Exp FROM medicines_info WHERE Exp < CURDATE() AND Qty > 0"
-        df_expired = DatabaseHelper.get_dataframe(query_expired)
+        df_expired = DatabaseHelper.get_dataframe("""
+            SELECT Med_name, Exp
+            FROM medicines_info
+            WHERE Exp IS NOT NULL AND Exp != ''
+              AND date(Exp) < date('now')
+              AND Qty > 0
+        """)
         for _, row in df_expired.iterrows():
             alerts.append({
-                'type': 'expired',
-                'medicine': row['Med_name'],
-                'message': f"Expired on {row['Exp']}",
-                'priority': 'critical',
-                'icon': '❌'
+                "priority": "critical",
+                "icon": "❌",
+                "medicine": row["Med_name"],
+                "message": f"Expired on {row['Exp']}"
             })
 
-        # Expiring soon alerts
-        thirty_days = (datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
-        query_expiring = f"SELECT Med_name, Exp FROM medicines_info WHERE Exp BETWEEN CURDATE() AND '{thirty_days}'"
-        df_expiring = DatabaseHelper.get_dataframe(query_expiring)
+        df_expiring = DatabaseHelper.get_dataframe("""
+            SELECT Med_name, Exp
+            FROM medicines_info
+            WHERE Exp IS NOT NULL AND Exp != ''
+              AND date(Exp) BETWEEN date('now') AND date('now','+30 day')
+        """)
         for _, row in df_expiring.iterrows():
-            days_left = (row['Exp'] - datetime.now().date()).days
+            try:
+                days_left = (pd.to_datetime(row["Exp"]).date() - datetime.now().date()).days
+            except:
+                days_left = 0
             alerts.append({
-                'type': 'expiring_soon',
-                'medicine': row['Med_name'],
-                'message': f"Expires in {days_left} days",
-                'priority': 'medium' if days_left > 7 else 'high',
-                'icon': '⏰'
+                "priority": "medium" if days_left > 7 else "high",
+                "icon": "⏰",
+                "medicine": row["Med_name"],
+                "message": f"Expires in {days_left} days"
             })
 
-        # Display all alerts
         if alerts:
             st.markdown(f"### 🔔 All Notifications ({len(alerts)})")
+            priority_order = {"critical": 1, "high": 2, "medium": 3, "low": 4}
+            alerts.sort(key=lambda x: priority_order.get(x["priority"], 5))
 
-            # Sort by priority
-            priority_order = {'critical': 1, 'high': 2, 'medium': 3, 'low': 4}
-            alerts.sort(key=lambda x: priority_order.get(x['priority'], 5))
-
-            for alert in alerts:
-                if alert['priority'] == 'critical':
-                    st.error(f"{alert['icon']} **CRITICAL**: {alert['medicine']} - {alert['message']}")
-                elif alert['priority'] == 'high':
-                    st.warning(f"{alert['icon']} **HIGH**: {alert['medicine']} - {alert['message']}")
-                elif alert['priority'] == 'medium':
-                    st.info(f"{alert['icon']} **MEDIUM**: {alert['medicine']} - {alert['message']}")
+            for a in alerts:
+                if a["priority"] == "critical":
+                    st.error(f"{a['icon']} **CRITICAL**: {a['medicine']} - {a['message']}")
+                elif a["priority"] == "high":
+                    st.warning(f"{a['icon']} **HIGH**: {a['medicine']} - {a['message']}")
                 else:
-                    st.write(f"{alert['icon']} {alert['medicine']} - {alert['message']}")
-
-            # Summary
-            critical = sum(1 for a in alerts if a['priority'] == 'critical')
-            high = sum(1 for a in alerts if a['priority'] == 'high')
-            medium = sum(1 for a in alerts if a['priority'] == 'medium')
-
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Critical", critical)
-            with col2:
-                st.metric("High", high)
-            with col3:
-                st.metric("Medium", medium)
+                    st.info(f"{a['icon']} **MEDIUM**: {a['medicine']} - {a['message']}")
         else:
             st.success("🎉 No notifications! All systems are normal.")
 
 
 def display_users():
-    """Afișează managementul utilizatorilor - COMPLET (funcționează deja)"""
-    # Această funcție este deja compatibilă
-    # O păstrez nemodificată deoarece folosește tabela users care va fi creată
-
     st.subheader("👥 User Management")
 
     tab1, tab2 = st.tabs(["View Users", "Add New User"])
 
-    # Tab 1: View Users
     with tab1:
-        query = "SELECT id, username, full_name, role, email, created_at FROM users ORDER BY role, username"
-        df = DatabaseHelper.get_dataframe(query)
-
+        df = DatabaseHelper.get_dataframe("""
+            SELECT id, username, full_name, role, email, created_at
+            FROM users
+            ORDER BY role, username
+        """)
         if not df.empty:
             st.dataframe(df, use_container_width=True)
+            role_counts = df["role"].value_counts()
 
-            # Statistics
-            role_counts = df['role'].value_counts()
-
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Total Users", len(df))
-            with col2:
-                st.metric("Admins", role_counts.get('admin', 0))
-            with col3:
-                st.metric("Pharmacists", role_counts.get('pharmacist', 0))
-            with col4:
-                st.metric("Cashiers", role_counts.get('cashier', 0))
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Total Users", len(df))
+            c2.metric("Admins", int(role_counts.get("admin", 0)))
+            c3.metric("Pharmacists", int(role_counts.get("pharmacist", 0)))
+            c4.metric("Cashiers", int(role_counts.get("cashier", 0)))
         else:
             st.info("No users found")
 
-    # Tab 2: Add New User
     with tab2:
         with st.form("add_user_form"):
             col1, col2 = st.columns(2)
@@ -1745,87 +1030,41 @@ def display_users():
             submitted = st.form_submit_button("💾 Add User", use_container_width=True)
 
             if submitted:
-                # Validation
                 if not username or not password or not full_name or not role:
                     st.error("Please fill all required fields (*)")
                 elif password != confirm_password:
                     st.error("Passwords do not match!")
                 else:
-                    # Check if username exists
-                    check_query = "SELECT id FROM users WHERE username = %s"
-                    check_result = DatabaseHelper.execute_query(check_query, (username,))
-
-                    if check_result and check_result[0]:
+                    dfc = DatabaseHelper.get_dataframe("SELECT id FROM users WHERE username = ? LIMIT 1", [username])
+                    if not dfc.empty:
                         st.error("Username already exists!")
                     else:
-                        # Add user
-                        insert_query = """
+                        DatabaseHelper.execute("""
                             INSERT INTO users (username, password, full_name, email, role)
-                            VALUES (%s, %s, %s, %s, %s)
-                        """
-                        values = (username, password, full_name, email, role)
-
-                        result = DatabaseHelper.execute_query(insert_query, values, fetch=False)
-
-                        if result:
-                            st.success(f"✅ User '{username}' added successfully!")
-                        else:
-                            st.error("❌ Failed to add user")
+                            VALUES (?, ?, ?, ?, ?)
+                        """, [username, password, full_name, email, role])
+                        st.success(f"✅ User '{username}' added successfully!")
 
 
-def display_settings():
-    """Afișează setările sistemului - COMPLET (funcționează deja)"""
+def display_search_only():
+    st.subheader("🔍 Quick Search")
+    search_by = st.selectbox("Search by", ["Name", "Code", "Purpose"])
+    term = st.text_input("Search term")
+    if term:
+        if search_by == "Name":
+            q = "SELECT * FROM medicines_info WHERE Med_name LIKE ? ORDER BY Med_name"
+        elif search_by == "Code":
+            q = "SELECT * FROM medicines_info WHERE Med_code LIKE ? ORDER BY Med_name"
+        else:
+            q = "SELECT * FROM medicines_info WHERE Purpose LIKE ? ORDER BY Med_name"
 
-    st.subheader("⚙️ System Settings")
-
-    tab1, tab2, tab3 = st.tabs(["Database", "Notifications", "Appearance"])
-
-    with tab1:
-        st.markdown("### Database Settings")
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.text_input("Host", value=Config.DB_CONFIG["host"], disabled=True)
-            st.text_input("Database", value=Config.DB_CONFIG["database"], disabled=True)
-
-        with col2:
-            st.text_input("User", value=Config.DB_CONFIG["user"], disabled=True)
-            st.text_input("Password", value="••••••••", type="password", disabled=True)
-
-        if st.button("🔄 Test Database Connection", use_container_width=True):
-            conn = Config.get_connection()
-            if conn:
-                st.success("✅ Database connection successful!")
-                conn.close()
-            else:
-                st.error("❌ Database connection failed!")
-
-        if st.button("🔄 Initialize Database", use_container_width=True):
-            with st.spinner("Initializing database..."):
-                Config.init_database()
-                st.success("✅ Database initialized successfully!")
-
-    with tab2:
-        st.markdown("### Notification Settings")
-
-        email_notifications = st.checkbox("Enable Email Notifications", value=True)
-        low_stock_alerts = st.checkbox("Low Stock Alerts", value=True)
-        expiry_alerts = st.checkbox("Expiry Alerts", value=True)
-
-        alert_days = st.slider("Days before expiry to alert", 7, 90, 30)
-
-        if st.button("💾 Save Notification Settings", use_container_width=True):
-            st.success("✅ Notification settings saved!")
-
-    with tab3:
-        st.markdown("### Appearance Settings")
-
-        theme = st.selectbox("Theme", ["Light", "Dark", "Auto"])
-        language = st.selectbox("Language", ["English", "Romanian", "French"])
-
-        if st.button("💾 Save Appearance Settings", use_container_width=True):
-            st.success("✅ Appearance settings saved!")
+        df = DatabaseHelper.get_dataframe(q, [f"%{term}%"])
+        if not df.empty:
+            st.dataframe(df, use_container_width=True)
+        else:
+            st.warning("No results found")
+    else:
+        st.info("Enter a search term.")
 
 
 # ====================== RULARE APLICAȚIE ======================
